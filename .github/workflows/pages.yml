@@ -1,0 +1,73 @@
+name: Deploy game to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack verified game source for build
+        if: hashFiles('game-source-manifest.json') != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import {execFileSync} from 'node:child_process';
+          const m=JSON.parse(fs.readFileSync('game-source-manifest.json'));
+          if(!Array.isArray(m.parts)||m.parts.some(p=>!/^game-source\.part\d{2}$/.test(p)))throw Error('Invalid upload manifest');
+          const archive=Buffer.concat(m.parts.map(p=>fs.readFileSync(p)));
+          if(crypto.createHash('sha256').update(archive).digest('hex')!==m.archiveSha256)throw Error('Upload integrity mismatch');
+          const filename=process.env.RUNNER_TEMP+'/rhodes-source.tar.gz';
+          fs.writeFileSync(filename,archive);
+          execFileSync('tar',['-xzf',filename]);
+          NODE
+          node scripts/generate-docs.mjs
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static game
+        run: npm run build
+
+      - name: Run logic tests
+        run: npm test
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
